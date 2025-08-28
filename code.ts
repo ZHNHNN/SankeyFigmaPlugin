@@ -1,37 +1,71 @@
-// This plugin will open a window to prompt the user to enter a number, and
-// it will then create that many rectangles on the screen.
+figma.showUI(__html__, { width: 800, height: 600 });
 
-// This file holds the main code for plugins. Code in this file has access to
-// the *figma document* via the figma global object.
-// You can access browser APIs in the <script> tag inside "ui.html" which has a
-// full browser environment (See https://www.figma.com/plugin-docs/how-plugins-run).
+figma.ui.onmessage = async (msg) => {
+  if (msg.type === 'create-sankey') {
+    const { nodes: nodeData, links: linkData } = msg.data;
 
-// This shows the HTML page in "ui.html".
-figma.showUI(__html__);
+    // Load the font that will be used in the text nodes.
+    await figma.loadFontAsync({ family: "Inter", style: "Regular" });
 
-// Calls to "parent.postMessage" from within the HTML page will trigger this
-// callback. The callback will be passed the "pluginMessage" property of the
-// posted message.
-figma.ui.onmessage =  (msg: {type: string, count: number}) => {
-  // One way of distinguishing between different types of messages sent from
-  // your HTML page is to use an object with a "type" property like this.
-  if (msg.type === 'create-shapes') {
-    // This plugin creates rectangles on the screen.
-    const numberOfRectangles = msg.count;
+    const createdNodes: SceneNode[] = [];
 
-    const nodes: SceneNode[] = [];
-    for (let i = 0; i < numberOfRectangles; i++) {
+    // Create rectangles and text labels for each node in the Sankey data.
+    for (const node of nodeData) {
       const rect = figma.createRectangle();
-      rect.x = i * 150;
-      rect.fills = [{ type: 'SOLID', color: { r: 1, g: 0.5, b: 0 } }];
+      rect.x = node.x;
+      rect.y = node.y;
+      rect.resize(node.width, 40); // nodeHeight is 40 in ui.html
+      // Style the rectangle to match the UI
+      rect.fills = [{ type: 'SOLID', color: { r: 0.913, g: 0.949, b: 1 } }]; // #e9f2ff
+      rect.strokes = [{ type: 'SOLID', color: { r: 0.4, g: 0.6, b: 0.8 } }]; // #6699cc
+      rect.cornerRadius = 6;
       figma.currentPage.appendChild(rect);
-      nodes.push(rect);
-    }
-    figma.currentPage.selection = nodes;
-    figma.viewport.scrollAndZoomIntoView(nodes);
-  }
 
-  // Make sure to close the plugin when you're done. Otherwise the plugin will
-  // keep running, which shows the cancel button at the bottom of the screen.
-  figma.closePlugin();
+      const text = figma.createText();
+      text.x = node.x + 6;
+      text.y = node.y;
+      text.resize(node.width - 12, 40);
+      text.characters = node.name;
+      text.fontSize = 12;
+      // Style the text to match the UI
+      text.fills = [{ type: 'SOLID', color: { r: 0.137, g: 0.29, b: 0.466 } }]; // #234d77
+      text.textAlignVertical = 'CENTER';
+      figma.currentPage.appendChild(text);
+
+      // Group the rectangle and its text label together.
+      const nodeGroup = figma.group([rect, text], figma.currentPage);
+      nodeGroup.name = node.name;
+      createdNodes.push(nodeGroup);
+    }
+
+    // Create vector paths for each link in the Sankey data.
+    for (const link of linkData) {
+      const vector = figma.createVector();
+      // Use the SVG path data from the UI to draw the vector.
+      vector.vectorPaths = [{
+          windingRule: 'NONZERO',
+          data: link.path,
+      }];
+      // Style the vector to match the UI
+      vector.fills = [{ type: 'SOLID', color: { r: 0.435, g: 0.812, b: 0.592 }, opacity: 0.8 }]; // #6fcf97
+      vector.strokes = []; // No stroke
+
+      figma.currentPage.appendChild(vector);
+      createdNodes.push(vector);
+    }
+
+    // Group all the created nodes (rectangles, text, and vectors) into a single group.
+    if (createdNodes.length > 0) {
+      const sankeyGroup = figma.group(createdNodes, figma.currentPage);
+      sankeyGroup.name = "Sankey Diagram";
+
+      // Select the new group and zoom the viewport to it.
+      figma.currentPage.selection = [sankeyGroup];
+      figma.viewport.scrollAndZoomIntoView([sankeyGroup]);
+
+      figma.notify('Sankey diagram created successfully!');
+    } else {
+      figma.notify('No data to create a diagram.');
+    }
+  }
 };
