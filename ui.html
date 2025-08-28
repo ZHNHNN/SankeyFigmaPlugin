@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>思维导图式桑基图增强原型</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-VuLTjSABNlE8iYyVgpvNoR4pwJcvleT1jgiJkM9QN0k8O1gZQ+efaNhCT2VBOEHp" crossorigin="anonymous"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: sans-serif;
+    background-color: #f5f7fa;
+  }
+  #controls {
+    padding: 8px;
+    background: #ffffff;
+    border-bottom: 1px solid #e0e0e0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  #chart {
+    position: relative;
+    width: 100vw;
+    height: calc(100vh - 50px);
+    overflow: auto;
+  }
+  .node rect {
+    fill: #e9f2ff; /* light blue background */
+    stroke: #6699cc;
+    cursor: pointer;
+    /* rounded corners will be set via rx attribute in JS */
+    filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.1));
+  }
+  /* Selected node highlight: use a blue border and glow instead of red.
+     Only the rectangle is highlighted; the delete button remains unchanged. */
+  .node.selected rect {
+    stroke: #4a90e2;
+    stroke-width: 3px;
+    /* Apply a soft glow around the selected tag.  The drop-shadow uses
+       a semi‑transparent blue to create an outward glow effect without
+       affecting the inner fill. */
+    filter: drop-shadow(0 0 4px rgba(74, 144, 226, 0.6));
+  }
+  .node.hover-target rect {
+    /* Highlight potential drop targets with blue stroke instead of orange */
+    stroke: #4a90e2;
+    stroke-width: 2px;
+  }
+  .node text {
+    fill: #234d77;
+    font-size: 12px;
+    /* Disable pointer events on the text itself so that mousedown and click
+       events bubble up to the parent <g> node.  This allows the entire
+       tag (including the text) to participate in drag interactions. */
+    pointer-events: none;
+  }
+  .link {
+    /* The link paths are filled and stroked via inline attributes in the
+       update() function.  Here we avoid overriding those values. */
+    fill-opacity: 0.8;
+    stroke: none;
+  }
+  .link:hover {
+    stroke-opacity: 1;
+  }
+  .delete-node {
+    fill: #d9534f;
+    font-size: 16px;
+    font-weight: bold;
+    pointer-events: none;
+  }
+  /*
+   * The delete icon is placed inside each tag.  It is hidden by default and
+   * only appears when hovering over the parent node.  When hovering over
+   * the icon itself, it fills with a red background and the × becomes
+   * white to indicate danger.  Removing the border keeps it clean.
+   */
+  .delete-node-btn {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.1s ease-in-out;
+  }
+  .node:hover .delete-node-btn {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .delete-node-btn rect {
+    fill: transparent;
+    rx: 3;
+    ry: 3;
+  }
+  .delete-node-btn:hover rect {
+    fill: #d9534f;
+  }
+
+  /* Do not highlight delete icon when the parent node is selected */
+  .node.selected .delete-node-btn rect {
+    /* prevent border or fill changes on selection */
+    stroke: none;
+  }
+  .delete-node-btn text {
+    fill: #6699cc;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .delete-node-btn:hover text {
+    fill: #ffffff;
+  }
+
+  /* Floating help card to provide user guidance. */
+  .help-card {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    width: 280px;
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #333;
+    line-height: 1.6;
+    z-index: 1000;
+  }
+  .help-card strong {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 14px;
+    color: #234d77;
+  }
+  .delete-col {
+    fill: #d9534f;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    pointer-events: all;
+  }
+  .add-tag-btn rect {
+    fill: #f0f5ff;
+    stroke: #6699cc;
+    rx: 4;
+    cursor: pointer;
+  }
+  .add-tag-btn text {
+    fill: #6699cc;
+    font-size: 14px;
+    font-weight: bold;
+    pointer-events: none;
+  }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.2/d3.min.js"></script>
+</head>
+<body>
+<div id="controls">
+  <button id="add-col" class="btn btn-primary btn-sm" style="display:none;">新增栏（列）</button>
+  <span style="margin-left:16px; font-size:14px; color:#555; display:none;">说明：此内容已移至悬浮提示卡片。</span>
+</div>
+<div id="chart"></div>
+<!-- Floating help card for user guidance -->
+<div class="help-card">
+  <strong>操作提示</strong>
+  连接：单击标签选择起点，再单击相邻列的终点，或按住并拖拽从起点拖到目标。<br/>
+  删除连线：单击选择连线按 Delete/Backspace 删除，或双击连线删除。<br/>
+  编辑标签：双击标签编辑文字，列宽随最长标签自动调整。<br/>
+  添加/删除：悬停标签显示 × 按钮删除；点击 + 按钮添加标签或列。
+</div>
+<script>
+(function() {
+  const nodeHeight = 40;
+  const rowSpacing = 20;
+  const columnSpacing = 50; // space between columns
+  const margin = { top: 30, left: 20 };
+
+  let nodes = [];
+  let links = [];
+  let nextNodeId = 0;
+  let selectedSource = null;
+  // Currently selected link for deletion/highlight.  When non-null, it
+  // contains an object with source and target ids.  Pressing Delete or
+  // Backspace will remove this link.
+  let selectedLink = null;
+  // Id of the node currently highlighted as a potential drop target when
+  // dragging a connection.  When null, no target is highlighted.
+  let hoverTargetId = null;
+  let currentPositions = {};
+
+  const chartDiv = d3.select('#chart');
+  const addColBtn = document.getElementById('add-col');
+
+  // Canvas for measuring text
+  const measureCanvas = document.createElement('canvas');
+  const ctx = measureCanvas.getContext('2d');
+  ctx.font = '12px sans-serif';
+  function measureTextWidth(text) {
+    return ctx.measureText(text).width;
+  }
+
+  // Gap between individual flow bands inside a node.  This gap is subtracted from
+  // each band's height when a node connects to multiple targets or receives
+  // multiple sources.  It helps visually separate flows leaving or entering a node.
+  const flowGap = 4;
+
+  // Additional margin used when determining whether the cursor is close
+  // enough to a node to highlight it as a potential connection target
+  // during a drag.  This makes the connection area feel larger and
+  // provides an attractive snap‑to effect when dragging near a tag.
+  // Margin around a node that counts as a valid drop target when dragging.
+  // Increasing this value enlarges the effective connection area and
+  // improves the snapping effect when the cursor approaches a tag.
+  const dragHoverMargin = 12;
+
+  // Initialize with two columns
+  function init() {
+    nodes = [
+      { id: nextNodeId++, name: '标签1', column: 0 },
+      { id: nextNodeId++, name: '标签2', column: 1 }
+    ];
+    links = [ { source: nodes[0].id, target: nodes[1].id } ];
+    update();
+  }
+
+  // Update diagram
+  function update() {
+    // Compute width for each node based on text
+    nodes.forEach(n => {
+      const w = measureTextWidth(n.name) + 20;
+      n.width = Math.max(60, w); // minimum width
+    });
+    // Group nodes by column
+    const columnsMap = d3.group(nodes, d => d.column);
+    const cols = Array.from(columnsMap.keys()).sort((a,b) => a - b);
+    // Compute column widths (max of node widths in each column)
+    const colWidths = {};
+    cols.forEach(col => {
+      const list = columnsMap.get(col) || [];
+      let maxW = 60;
+      list.forEach(n => { if (n.width > maxW) maxW = n.width; });
+      colWidths[col] = maxW;
+    });
+    // Compute x positions for columns
+    const colX = {};
+    let accX = margin.left;
+    cols.forEach(col => {
+      colX[col] = accX;
+      accX += colWidths[col] + columnSpacing;
+    });
+    // Compute y positions (same constant spacing per column)
+    currentPositions = {};
+    cols.forEach(col => {
+      const list = columnsMap.get(col).slice().sort((a,b) => a.id - b.id);
+      list.forEach((n,row) => {
+        const x = colX[col];
+        const y = margin.top + row * (nodeHeight + rowSpacing);
+        // Use the column’s maximum width for all nodes in the column so that
+        // tags remain aligned and have the same width after edits.
+        const effectiveWidth = colWidths[col];
+        currentPositions[n.id] = { x, y, width: effectiveWidth, column: col };
+      });
+    });
+    // Determine SVG size
+    const maxRows = d3.max(Array.from(columnsMap.values()), list => list.length) || 1;
+    const svgWidth = accX + margin.left; // already computed accX after last col
+    const svgHeight = margin.top + maxRows * nodeHeight + (maxRows - 1) * rowSpacing + margin.top + 40; // extra for buttons
+
+    // Count connections per node side (left and right).  For each link we
+    // determine whether it uses the right side of the source/target or the
+    // left side.  Left-to-right links use the right side of the source and
+    // the left side of the target; right-to-left links use the left side of
+    // the source and the right side of the target.
+    const leftCounts = {}, rightCounts = {};
+    nodes.forEach(n => { leftCounts[n.id] = 0; rightCounts[n.id] = 0; });
+    links.forEach(l => {
+      const sPos = currentPositions[l.source];
+      const tPos = currentPositions[l.target];
+      if (sPos.x < tPos.x) {
+        // Source flows to the right, target flows from the left
+        rightCounts[l.source]++;
+        leftCounts[l.target]++;
+      } else {
+        // Source flows to the left, target flows from the right
+        leftCounts[l.source]++;
+        rightCounts[l.target]++;
+      }
+    });
+    // Compute band heights separately for left and right sides.  If a node has
+    // no connections on a side, the band height for that side will be 0 (and
+    // unused).  Otherwise it is the node height minus total gaps divided by the
+    // number of flows on that side.
+    const leftBandHeight = {}, rightBandHeight = {};
+    nodes.forEach(n => {
+      const lCount = leftCounts[n.id];
+      const rCount = rightCounts[n.id];
+      leftBandHeight[n.id] = lCount > 0 ? (nodeHeight - (lCount - 1) * flowGap) / lCount : 0;
+      rightBandHeight[n.id] = rCount > 0 ? (nodeHeight - (rCount - 1) * flowGap) / rCount : 0;
+    });
+
+    // Build unified lists of links that attach to each node's left and right
+    // sides.  A link attaches to the right side of the source node when it
+    // flows left-to-right, and to the left side of the source node when it
+    // flows right-to-left.  Similarly, a link attaches to the left side of
+    // the target node when flowing left-to-right, and to the right side of
+    // the target node when flowing right-to-left.  We will use these lists
+    // to compute a consistent ordering of flows on each side based on the
+    // vertical positions of their opposite endpoints.  This prevents
+    // overlapping bands when a node both sends and receives flows on the
+    // same side (e.g. a node with an incoming left-to-right link and an
+    // outgoing right-to-left link should have those bands stacked instead
+    // of occupying the same slot).
+    const leftSideLinksByNode = {};
+    const rightSideLinksByNode = {};
+    links.forEach(l => {
+      const s = l.source;
+      const t = l.target;
+      const sPos = currentPositions[s];
+      const tPos = currentPositions[t];
+      if (sPos.x < tPos.x) {
+        // left-to-right: source uses right side, target uses left side
+        (rightSideLinksByNode[s] = rightSideLinksByNode[s] || []).push(l);
+        (leftSideLinksByNode[t] = leftSideLinksByNode[t] || []).push(l);
+      } else {
+        // right-to-left: source uses left side, target uses right side
+        (leftSideLinksByNode[s] = leftSideLinksByNode[s] || []).push(l);
+        (rightSideLinksByNode[t] = rightSideLinksByNode[t] || []).push(l);
+      }
+    });
+    // Assign indices on each side for each node.  We sort the list of
+    // attached links by the vertical position of the opposite endpoint.
+    // These indices will later be used to determine where each band
+    // originates/terminates on a node.  We store the indices in a map
+    // keyed by link so that multiple links referencing the same link
+    // object do not conflict across updates.
+    const leftSideIndexByNode = {};
+    const rightSideIndexByNode = {};
+    Object.keys(leftSideLinksByNode).forEach(nodeId => {
+      const list = leftSideLinksByNode[nodeId];
+      list.sort((a, b) => {
+        const otherA = (a.source === +nodeId ? a.target : a.source);
+        const otherB = (b.source === +nodeId ? b.target : b.source);
+        return currentPositions[otherA].y - currentPositions[otherB].y;
+      });
+      const m = new Map();
+      list.forEach((l, i) => m.set(l, i));
+      leftSideIndexByNode[nodeId] = m;
+    });
+    Object.keys(rightSideLinksByNode).forEach(nodeId => {
+      const list = rightSideLinksByNode[nodeId];
+      list.sort((a, b) => {
+        const otherA = (a.source === +nodeId ? a.target : a.source);
+        const otherB = (b.source === +nodeId ? b.target : b.source);
+        return currentPositions[otherA].y - currentPositions[otherB].y;
+      });
+      const m = new Map();
+      list.forEach((l, i) => m.set(l, i));
+      rightSideIndexByNode[nodeId] = m;
+    });
+
+    // Build link path data.  Each link uses the band height associated with
+    // its side on the source and target nodes.  Left-to-right links use the
+    // right side of the source and the left side of the target; right-to-left
+    // links use the left side of the source and the right side of the target.
+    const linkData = links.map(l => {
+      const s = l.source;
+      const t = l.target;
+      const sPos = currentPositions[s];
+      const tPos = currentPositions[t];
+      let sBand, tBand, sIndex, tIndex;
+      let y1Start, y1End, y2Start, y2End;
+      // Determine direction based on x positions
+      if (sPos.x < tPos.x) {
+        // Left-to-right: source uses right side, target uses left side
+        sBand = rightBandHeight[s];
+        tBand = leftBandHeight[t];
+        // Determine the index on the source's right side and target's left side.
+        // Use unified index maps so that both incoming and outgoing flows
+        // share the same ordering on each side.  Default to 0 if undefined.
+        sIndex = (rightSideIndexByNode[s] && rightSideIndexByNode[s].get(l)) ?? 0;
+        tIndex = (leftSideIndexByNode[t] && leftSideIndexByNode[t].get(l)) ?? 0;
+        y1Start = sPos.y + sIndex * (sBand + flowGap);
+        y1End = y1Start + sBand;
+        y2Start = tPos.y + tIndex * (tBand + flowGap);
+        y2End = y2Start + tBand;
+      } else {
+        // Right-to-left: source uses left side, target uses right side
+        sBand = leftBandHeight[s];
+        tBand = rightBandHeight[t];
+        sIndex = (leftSideIndexByNode[s] && leftSideIndexByNode[s].get(l)) ?? 0;
+        tIndex = (rightSideIndexByNode[t] && rightSideIndexByNode[t].get(l)) ?? 0;
+        y1Start = sPos.y + sIndex * (sBand + flowGap);
+        y1End = y1Start + sBand;
+        y2Start = tPos.y + tIndex * (tBand + flowGap);
+        y2End = y2Start + tBand;
+      }
+      let x1, x2;
+      if (sPos.x < tPos.x) {
+        x1 = sPos.x + sPos.width;
+        x2 = tPos.x;
+      } else {
+        x1 = sPos.x;
+        x2 = tPos.x + tPos.width;
+      }
+      const xi = x1 + (x2 - x1) * 0.5;
+      const xj = x2 - (x2 - x1) * 0.5;
+      const path = [
+        `M ${x1} ${y1Start}`,
+        `C ${xi} ${y1Start}, ${xj} ${y2Start}, ${x2} ${y2Start}`,
+        `L ${x2} ${y2End}`,
+        `C ${xj} ${y2End}, ${xi} ${y1End}, ${x1} ${y1End}`,
+        'Z'
+      ].join(' ');
+      return { path, source: s, target: t };
+    });
+
+    // Clear and draw
+    chartDiv.selectAll('svg').remove();
+    const svg = chartDiv.append('svg')
+      .attr('width', svgWidth)
+      .attr('height', svgHeight);
+
+    // Links
+    // Draw visible link bands.  Clicking a band toggles its selection
+    // (highlights it) and double‑clicking removes it.  The bands are
+    // filled and stroked to indicate flow thickness.  We enable
+    // pointer events on the entire shape so that clicks anywhere
+    // inside the band register.
+    const linkGroup = svg.append('g');
+    linkGroup.selectAll('path')
+      .data(linkData)
+      .join('path')
+      .attr('class', d => {
+        const sel = selectedLink && selectedLink.source === d.source && selectedLink.target === d.target;
+        return 'link' + (sel ? ' selected-link' : '');
+      })
+      .attr('d', d => d.path)
+      .attr('fill', d => {
+        const sel = selectedLink && selectedLink.source === d.source && selectedLink.target === d.target;
+        return sel ? '#f5a6a6' : '#6fcf97';
+      })
+      .attr('stroke', d => {
+        const sel = selectedLink && selectedLink.source === d.source && selectedLink.target === d.target;
+        return sel ? '#d9534f' : '#6fcf97';
+      })
+      .attr('stroke-opacity', 0.8)
+      .style('cursor', 'pointer')
+      .style('pointer-events', 'all')
+      .on('click', (event, d) => {
+        // Toggle selection on click
+        if (selectedLink && selectedLink.source === d.source && selectedLink.target === d.target) {
+          selectedLink = null;
+        } else {
+          selectedLink = { source: d.source, target: d.target };
+        }
+        update();
+        event.stopPropagation();
+      })
+      .on('dblclick', (event, d) => {
+        // Remove link on double click
+        links = links.filter(l => !(l.source === d.source && l.target === d.target));
+        selectedLink = null;
+        update();
+        event.stopPropagation();
+      })
+      .on('mouseover', function(event, d) {
+        // Lighten colour on hover if not selected
+        if (!(selectedLink && selectedLink.source === d.source && selectedLink.target === d.target)) {
+          d3.select(this).attr('fill', '#8edfaa');
+        }
+      })
+      .on('mouseout', function(event, d) {
+        // Restore colour on mouse out
+        const sel = selectedLink && selectedLink.source === d.source && selectedLink.target === d.target;
+        d3.select(this).attr('fill', sel ? '#f5a6a6' : '#6fcf97');
+      });
+
+    // For each link, draw a small delete button near its center.  This provides
+    // an explicit handle to remove the connection without relying solely on
+    // double‑clicking the path.  We approximate the centre of each link by
+    // averaging the start and end positions of the band.
+    const linkButtons = svg.append('g').attr('display', 'none');
+    linkButtons.selectAll('g.link-delete-btn')
+      .data(linkData)
+      .join('g')
+      .attr('class', 'link-delete-btn')
+      .attr('transform', d => {
+        // Derive approximate midpoints for x and y.  For x we take the
+        // midpoint between the starting and ending x; for y we average the
+        // midpoints of the start and end bands.  This positions the icon
+        // roughly in the centre of the flow.
+        const sPos = currentPositions[d.source];
+        const tPos = currentPositions[d.target];
+        let x1, x2;
+        if (sPos.x < tPos.x) {
+          x1 = sPos.x + sPos.width;
+          x2 = tPos.x;
+        } else {
+          x1 = sPos.x;
+          x2 = tPos.x + tPos.width;
+        }
+        const midX = (x1 + x2) / 2;
+        // Use the average of the y start and end positions for both the
+        // source and target side to approximate the vertical centre.
+        // Extracting the y values from the path string is complex, so we
+        // compute them similarly to how the path was generated.  We need
+        // access to the offsets and band heights again.  Determine whether
+        // the link is left-to-right or right-to-left.
+        const isLTR = sPos.x < tPos.x;
+        // Determine the counts on each side as in linkData computation.
+        // Compute band index for this link again.  We reconstruct the
+        // relevant offsets arrays.
+        const sBandHeight = isLTR ? rightBandHeight[d.source] : leftBandHeight[d.source];
+        const tBandHeight = isLTR ? leftBandHeight[d.target] : rightBandHeight[d.target];
+        // We need the index of this link among links on that side.  Find the index by
+        // counting previous links in linkData for the same source/target side.
+        let sCount = 0;
+        let tCount = 0;
+        for (const ld of linkData) {
+          if (ld === d) break;
+          const s2 = ld.source;
+          const t2 = ld.target;
+          const s2Pos = currentPositions[s2];
+          const t2Pos = currentPositions[t2];
+          const is2LTR = s2Pos.x < t2Pos.x;
+          if (isLTR && ld.source === d.source && is2LTR) sCount++;
+          if (!isLTR && ld.source === d.source && !is2LTR) sCount++;
+          if (isLTR && ld.target === d.target && is2LTR) tCount++;
+          if (!isLTR && ld.target === d.target && !is2LTR) tCount++;
+        }
+        const y1Start = sPos.y + sCount * (sBandHeight + flowGap);
+        const y1End = y1Start + sBandHeight;
+        const y2Start = tPos.y + tCount * (tBandHeight + flowGap);
+        const y2End = y2Start + tBandHeight;
+        const midY = ( (y1Start + y1End) / 2 + (y2Start + y2End) / 2 ) / 2;
+        return `translate(${midX - 10},${midY - 10})`;
+      })
+      .each(function(d) {
+        const g = d3.select(this);
+        // Transparent background for easier hit area
+        g.append('rect')
+          .attr('width', 20)
+          .attr('height', 20)
+          .attr('fill', 'rgba(255,255,255,0.6)')
+          .attr('rx', 4)
+          .attr('ry', 4)
+          .attr('stroke', '#d9534f')
+          .attr('stroke-width', 1)
+          .style('cursor', 'pointer');
+        g.append('text')
+          .attr('x', 10)
+          .attr('y', 10)
+          .attr('dy', '0.35em')
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'middle')
+          .attr('fill', '#d9534f')
+          .attr('font-size', 12)
+          .text('×')
+          .style('pointer-events', 'none');
+        g.on('click', (event) => {
+          // Remove this link
+          links = links.filter(l => !(l.source === d.source && l.target === d.target));
+          selectedSource = null;
+          update();
+          event.stopPropagation();
+        });
+      });
+
+    // Nodes
+    const nodeGroups = svg.append('g').selectAll('g.node')
+      .data(nodes)
+      .join('g')
+      .attr('class', d => {
+        let cls = 'node';
+        if (selectedSource && selectedSource.id === d.id) cls += ' selected';
+        if (hoverTargetId !== null && hoverTargetId === d.id) cls += ' hover-target';
+        return cls;
+      })
+      .attr('transform', d => {
+        const pos = currentPositions[d.id];
+        return `translate(${pos.x},${pos.y})`;
+      });
+    nodeGroups.append('rect')
+      .attr('width', d => currentPositions[d.id].width)
+      .attr('height', nodeHeight)
+      .attr('rx', 6)
+      .attr('ry', 6);
+    nodeGroups.append('text')
+      .attr('x', 6)
+      .attr('y', nodeHeight / 2)
+      .attr('dy', '0.35em')
+      .text(d => d.name);
+
+    // Attach interaction handlers to the node group itself so that clicks and
+    // drags originating anywhere within the node (including its text) are
+    // recognised.  We prevent events from bubbling to the SVG background,
+    // which would otherwise clear the selection state.  Double‑clicks
+    // trigger text editing.
+    nodeGroups
+      .on('mousedown', (event, d) => {
+        event.stopPropagation();
+        // If a node is already selected and the user clicks another node in an
+        // adjacent column, immediately create a connection instead of
+        // starting a drag.  This preserves the click‑to‑connect behaviour
+        // even when drag logic is present.  Double‑clicks are ignored
+        // here; they are handled by the dblclick listener.
+        if (event.detail === 1) {
+          if (selectedSource && selectedSource.id !== d.id &&
+              Math.abs(selectedSource.column - d.column) === 1) {
+            handleNodeClick(d);
+          } else {
+            startDrag(event, d);
+          }
+        }
+      })
+      .on('click', (event) => {
+        // Prevent click from bubbling up to the SVG background, which would
+        // clear selections.
+        event.stopPropagation();
+      })
+      .on('dblclick', (event, d) => {
+        event.stopPropagation();
+        editNode(d);
+      });
+    // Delete node button: wrap the × inside a small group.  Position it
+    // inside the top-right corner of the node.  It is hidden until the
+    // parent node is hovered.  The transform ensures it remains within
+    // the node bounds.
+    const delBtn = nodeGroups.append('g')
+      .attr('class', 'delete-node-btn')
+      .attr('transform', d => {
+        const pos = currentPositions[d.id];
+        // Place the delete button inside the tag: 18x18 box aligned to
+        // the right with a 4px margin from the top.  Subtract 4 to leave
+        // a small gap on the right edge.
+        return `translate(${pos.width - 22}, 2)`;
+      })
+      .style('cursor', 'pointer')
+      // Prevent mousedown on the delete icon from triggering node drag or selection.
+      .on('mousedown', function(event) {
+        event.stopPropagation();
+      })
+      .on('click', function(event) {
+        const nodeData = d3.select(this).datum();
+        deleteNode(nodeData);
+        event.stopPropagation();
+      });
+    // Transparent rect to enlarge the hit area; hover styles handled by CSS.
+    delBtn.append('rect')
+      .attr('width', 18)
+      .attr('height', 18)
+      .attr('rx', 3)
+      .attr('ry', 3);
+    delBtn.append('text')
+      .attr('class', 'delete-node')
+      .attr('x', 9)
+      .attr('y', 9)
+      .attr('dy', '0.35em')
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'middle')
+      .text('×');
+
+    // Add-tag buttons
+    svg.append('g').selectAll('g.add-tag-btn')
+      .data(cols)
+      .join('g')
+      .attr('class', 'add-tag-btn')
+      .attr('transform', col => {
+        const x = colX[col] + (colWidths[col] - 20) / 2;
+        const count = (columnsMap.get(col) || []).length;
+        const y = margin.top + count * (nodeHeight + rowSpacing) + 4;
+        return `translate(${x},${y})`;
+      })
+      .on('click', (event, col) => {
+        addTag(col);
+        event.stopPropagation();
+      })
+      .each(function(col) {
+        const g = d3.select(this);
+        g.append('rect')
+          .attr('width', 20)
+          .attr('height', 20)
+          .attr('rx', 4)
+          .attr('ry', 4);
+        g.append('text')
+          .attr('x', 10)
+          .attr('y', 10)
+          .attr('dy', '0.35em')
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'middle')
+          .text('+');
+      });
+
+    // Add-column button on the far right of the first row.  This button is
+    // rendered near the top of the last column to make it more discoverable.
+    if (cols.length > 0) {
+      const lastCol = d3.max(cols);
+      const xPos = colX[lastCol] + colWidths[lastCol] + 20;
+      const yPos = margin.top + (nodeHeight - 20) / 2;
+      const addColGroup = svg.append('g')
+        .attr('class', 'add-col-btn')
+        .attr('transform', `translate(${xPos},${yPos})`)
+        .style('cursor', 'pointer')
+        .on('click', (event) => {
+          addColumn();
+          event.stopPropagation();
+        });
+      addColGroup.append('rect')
+        .attr('width', 20)
+        .attr('height', 20)
+        .attr('rx', 4)
+        .attr('ry', 4)
+        .attr('fill', '#f0f5ff')
+        .attr('stroke', '#6699cc');
+      addColGroup.append('text')
+        .attr('x', 10)
+        .attr('y', 10)
+        .attr('dy', '0.35em')
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('fill', '#6699cc')
+        .attr('font-size', 14)
+        .text('+');
+    }
+
+    // Delete column buttons
+    svg.append('g').selectAll('text.delete-col')
+      .data(cols)
+      .join('text')
+      .attr('class', 'delete-col')
+      .attr('x', col => colX[col] + colWidths[col] - 8)
+      // Position the column delete buttons higher so they do not sit too
+      // close to the first tag.  Increasing the offset from -10 to -20
+      // improves spacing and reduces accidental clicks on the first node.
+      .attr('y', margin.top - 30)
+      .text('×')
+      .on('click', (event, col) => {
+        deleteColumn(col);
+        event.stopPropagation();
+      });
+
+    // Background click resets selection
+    svg.on('click', () => {
+      selectedSource = null;
+      update();
+    });
+  }
+
+  // Handling node click for linking
+  function handleNodeClick(node) {
+    if (!selectedSource) {
+      selectedSource = node;
+      update();
+      return;
+    }
+    if (selectedSource.id === node.id) {
+      selectedSource = null;
+      update();
+      return;
+    }
+    if (Math.abs(selectedSource.column - node.column) === 1) {
+      // Create link if no existing link between these two nodes in either direction
+      const exists = links.some(l =>
+        (l.source === selectedSource.id && l.target === node.id) ||
+        (l.source === node.id && l.target === selectedSource.id)
+      );
+      if (!exists) {
+        links.push({ source: selectedSource.id, target: node.id });
+      }
+    }
+    selectedSource = null;
+    update();
+  }
+
+  // Begin drag to connect nodes.  When the user presses down on a node, we
+  // monitor mouse movement: if the mouse moves beyond a small threshold,
+  // a temporary line is drawn from the node toward the cursor.  Releasing
+  // the mouse over an adjacent node will create a connection between the
+  // source and that target.  Otherwise a simple click falls back to the
+  // existing handleNodeClick behaviour.  This mimics prototype linking in
+  // design tools like Figma.
+  function startDrag(event, node) {
+    const svgEl = d3.select('#chart svg');
+    // Do not automatically clear selectedSource here.  The mousedown
+    // handler already handles click-to-connect behaviour when there is a
+    // previously selected node.  Clearing selectedSource would prevent
+    // the second click from connecting.
+    let dragLine = null;
+    let dragStarted = false;
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    // Disable user selection at the very beginning of the interaction to
+    // prevent accidental text highlights during drag.  We do not set
+    // selectedSource here; it will be set only once a drag threshold is
+    // exceeded or within handleNodeClick for a simple click.
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
+    function getSVGPoint(clientX, clientY) {
+      const rect = svgEl.node().getBoundingClientRect();
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    }
+    function mousemoveHandler(ev) {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragStarted) {
+        if (Math.sqrt(dx * dx + dy * dy) > 5) {
+          dragStarted = true;
+          // Begin a drag: mark this node as the source.  Instead of
+          // calling update() here (which would recreate the SVG and
+          // detach our drag handlers), we manually apply the selected
+          // class to the appropriate node group.  We also clear any
+          // existing hover highlights.
+          selectedSource = node;
+          d3.selectAll('g.node').classed('selected', d => d.id === node.id);
+          d3.selectAll('g.node').classed('hover-target', false);
+          const p = getSVGPoint(ev.clientX, ev.clientY);
+          const sPos = currentPositions[node.id];
+          const sSide = p.x >= sPos.x + sPos.width / 2 ? 'right' : 'left';
+          const sx = sSide === 'right' ? sPos.x + sPos.width : sPos.x;
+          const sy = sPos.y + nodeHeight / 2;
+          dragLine = svgEl.append('path')
+            .attr('class', 'temp-link')
+            .attr('fill', 'none')
+            .attr('stroke', '#6fcf97')
+            .attr('stroke-width', 2)
+            .attr('stroke-dasharray', '4,2');
+          dragLine.datum({ sx, sy });
+        }
+      }
+      if (dragStarted && dragLine) {
+        const p = getSVGPoint(ev.clientX, ev.clientY);
+        const dline = dragLine.datum();
+        const path = 'M ' + dline.sx + ' ' + dline.sy + ' L ' + p.x + ' ' + p.y;
+        dragLine.attr('d', path);
+
+        // Determine if the cursor is near a potential target node (adjacent column).
+        let found = null;
+        nodes.forEach(n => {
+          if (Math.abs(node.column - n.column) !== 1) return;
+          const cp = currentPositions[n.id];
+          if (p.x >= cp.x - dragHoverMargin && p.x <= cp.x + cp.width + dragHoverMargin &&
+              p.y >= cp.y - dragHoverMargin && p.y <= cp.y + nodeHeight + dragHoverMargin) {
+            found = n;
+          }
+        });
+        if (found) {
+          // Highlight the potential target by toggling the hover-target
+          // class on node groups.  Do not call update() during drag.
+          d3.selectAll('g.node').classed('hover-target', d => d.id === found.id);
+        } else {
+          d3.selectAll('g.node').classed('hover-target', false);
+        }
+      }
+    }
+    function mouseupHandler(ev) {
+      svgEl.on('mousemove', null).on('mouseup', null);
+      if (dragStarted) {
+        // We dragged: determine if we ended over a valid target.  Use extended
+        // margin so that dropping just outside a tag will still connect.
+        const p = getSVGPoint(ev.clientX, ev.clientY);
+        let targetNode = null;
+        nodes.forEach(n => {
+          if (Math.abs(node.column - n.column) !== 1) return;
+          const cp = currentPositions[n.id];
+          if (p.x >= cp.x - dragHoverMargin && p.x <= cp.x + cp.width + dragHoverMargin &&
+              p.y >= cp.y - dragHoverMargin && p.y <= cp.y + nodeHeight + dragHoverMargin) {
+            targetNode = n;
+          }
+        });
+        if (targetNode) {
+          const exists = links.some(l =>
+            (l.source === node.id && l.target === targetNode.id) ||
+            (l.source === targetNode.id && l.target === node.id)
+          );
+          if (!exists) {
+            links.push({ source: node.id, target: targetNode.id });
+          }
+        }
+        // Clear selection and hover state
+        selectedSource = null;
+        hoverTargetId = null;
+      } else {
+        // Simple click: handle selection logic.  Do not clear selectedSource
+        // so that a second click can connect nodes.
+        handleNodeClick(node);
+      }
+      // Remove temporary line and reset flags
+      if (dragLine) dragLine.remove();
+      dragLine = null;
+      dragStarted = false;
+      // Remove manual highlight classes applied during drag
+      d3.selectAll('g.node').classed('hover-target', false);
+      d3.selectAll('g.node').classed('selected', false);
+      // Restore user selection behaviour and redraw
+      document.body.style.userSelect = prevUserSelect;
+      update();
+    }
+    svgEl.on('mousemove', mousemoveHandler).on('mouseup', mouseupHandler);
+  }
+
+  // Edit node name with inline input overlay
+  function editNode(node) {
+    const pos = currentPositions[node.id];
+    const chartEl = chartDiv.node();
+    // Create input
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = node.name;
+    input.style.position = 'absolute';
+    input.style.left = (pos.x - chartEl.scrollLeft) + 'px';
+    input.style.top = (pos.y - chartEl.scrollTop) + 'px';
+    input.style.width = (pos.width) + 'px';
+    input.style.height = nodeHeight + 'px';
+    input.style.fontSize = '12px';
+    chartEl.appendChild(input);
+    input.focus();
+    input.select();
+    function finish() {
+      const val = input.value.trim();
+      if (val !== '') {
+        node.name = val;
+      }
+      chartEl.removeChild(input);
+      selectedSource = null;
+      update();
+    }
+    input.addEventListener('blur', finish);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') finish();
+      if (e.key === 'Escape') {
+        chartEl.removeChild(input);
+        update();
+      }
+    });
+  }
+
+  // Add column
+  function addColumn() {
+    const maxCol = nodes.length > 0 ? d3.max(nodes, d => d.column) : -1;
+    const newCol = maxCol + 1;
+    const newNode = { id: nextNodeId++, name: `标签${nodes.length + 1}`, column: newCol };
+    nodes.push(newNode);
+    // Connect previous column's first node to new node
+    const prevNodes = nodes.filter(n => n.column === newCol - 1);
+    if (prevNodes.length > 0) {
+      links.push({ source: prevNodes[0].id, target: newNode.id });
+    }
+    update();
+  }
+
+  // Add tag to column
+  function addTag(col) {
+    const newNode = { id: nextNodeId++, name: `标签${nodes.length + 1}`, column: col };
+    nodes.push(newNode);
+    update();
+  }
+
+  // Delete node and its connections
+  function deleteNode(node) {
+    nodes = nodes.filter(n => n.id !== node.id);
+    links = links.filter(l => l.source !== node.id && l.target !== node.id);
+    update();
+  }
+
+  // Delete column
+  function deleteColumn(col) {
+    // Remove nodes in this column
+    const idsToRemove = nodes.filter(n => n.column === col).map(n => n.id);
+    nodes = nodes.filter(n => n.column !== col);
+    links = links.filter(l => !idsToRemove.includes(l.source) && !idsToRemove.includes(l.target));
+    // Adjust columns greater than this
+    nodes.forEach(n => {
+      if (n.column > col) n.column -= 1;
+    });
+    update();
+  }
+
+  addColBtn.addEventListener('click', addColumn);
+
+  // Listen for Delete/Backspace key presses to remove a selected link.  When a
+  // link is selected (via single click) pressing Delete or Backspace will
+  // remove it and redraw the diagram.  Use event.key to detect both keys.
+  window.addEventListener('keydown', e => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLink) {
+      links = links.filter(l => !(l.source === selectedLink.source && l.target === selectedLink.target));
+      selectedLink = null;
+      update();
+    }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
