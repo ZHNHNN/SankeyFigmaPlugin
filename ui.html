@@ -154,6 +154,7 @@
 <body>
 <div id="controls">
   <button id="add-col" class="btn btn-primary btn-sm" style="display:none;">新增栏（列）</button>
+  <button id="create-btn" class="btn btn-success btn-sm">创建桑基图</button>
   <span style="margin-left:16px; font-size:14px; color:#555; display:none;">说明：此内容已移至悬浮提示卡片。</span>
 </div>
 <div id="chart"></div>
@@ -985,6 +986,14 @@
       update();
     }
   });
+
+  document.getElementById('create-btn').onclick = () => {
+    const data = {
+      nodes: nodes.map(n => ({ ...n, ...currentPositions[n.id] })),
+      links: linkData,
+    };
+    parent.postMessage({ pluginMessage: { type: 'create-sankey', data } }, '*');
+  };
 
   init();
 })();
